@@ -1,0 +1,92 @@
+import cuchaz.enigma.command.ConvertMappingsCommand
+
+buildscript {
+    repositories {
+        maven {
+            name "Fabric Repository"
+            url 'https://maven.fabricmc.net'
+        }
+    }
+
+    dependencies {
+        classpath "cuchaz:enigma:0.14.2.138"
+    }
+}
+
+plugins {
+    id 'maven'
+    id 'maven-publish'
+    id 'signing'
+    id 'com.jfrog.bintray' version '1.8.5'
+}
+
+def localMappingsPath = "$buildDir/v2Mappings"
+new File(localMappingsPath).mkdirs()
+def versionsToUpdate = []
+file("versionsToUpdate.txt").eachLine { versionsToUpdate.add(it) }
+def versions = []
+file('mappings').eachFile {
+    if (!it.name.endsWith(".tiny")) return
+    def mcVer = it.name.replace(".tiny", "")
+    getLogger().lifecycle(":loading mappings for $mcVer")
+
+    File v1MappingFile = it
+    File v2MappingFile = new File("$localMappingsPath/${it.name}")
+
+    def conversionTask = "convert${it.name}ToV2"
+    tasks.register(conversionTask) {
+        group = "V2 Conversion"
+        inputs.file(v1MappingFile)
+        outputs.file(v2MappingFile)
+
+        doLast {
+            new ConvertMappingsCommand().run(
+                    "tiny",
+                    v1MappingFile.path,
+                    "tinyv2:official:intermediary",
+                    v2MappingFile.path
+            )
+        }
+    }
+
+    Jar makeV1Jar = makeJar(mcVer, v1MappingFile, false)
+    Jar makeV2Jar = makeJar(mcVer, v2MappingFile, true)
+
+
+    build.dependsOn makeV1Jar
+    build.dependsOn makeV2Jar
+
+    makeV2Jar.dependsOn conversionTask
+
+    publishing {
+        publications {
+            create("${mcVer}_mavenJava", MavenPublication) {
+                groupId 'net.fabricmc'
+                artifactId "intermediary"
+                version mcVer
+                artifact(makeV1Jar.archiveFile) {
+                    builtBy makeV1Jar
+                }
+                artifact(makeV2Jar.archiveFile) {
+                    builtBy makeV2Jar
+                    classifier = "v2"
+                }
+            }
+        }
+    }
+
+    if (versionsToUpdate.contains(mcVer))
+        versions.add(mcVer)
+}
+
+def makeJar(String mcVersion, File mappings, boolean v2) {
+    def jarFilename = "intermediary-" + mcVersion + (v2 ? "-v2" : "")
+    return task("${mcVersion}_makeJar" + (v2 ? "v2" : ""), type: Jar) {
+        baseName jarFilename
+        from(file(mappings)) {
+            into "mappings"
+            rename mappings.name, "mappings.tiny"
+        }
+        destinationDirectory = file("build/jars")
+    }
+}
